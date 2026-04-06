@@ -1,0 +1,131 @@
+# =============================================================================
+# values-onprem.yaml - On-Premise Helm Deployment Overrides
+# =============================================================================
+# Use this file when deploying via Helm CLI on an on-premise cluster.
+# Adjust storage class, ingress, and region settings per your cluster.
+#
+# Usage:
+#   helm dependency update ./charts/kube-prometheus-stack-monitoring
+#   helm install monitoring ./charts/kube-prometheus-stack-monitoring \
+#     -f ./charts/kube-prometheus-stack-monitoring/ci/values-onprem.yaml \
+#     -n monitoring --create-namespace
+# =============================================================================
+
+fullnameOverride: "monitoring"
+
+# CRDs must be installed separately before deploying this chart
+crds:
+  enabled: false
+
+defaultRules:
+  create: false
+
+# ---
+# Grafana - on-prem storage class (adjust to match your cluster)
+# ---
+grafana:
+  enabled: true
+  adminPassword: "<SET_STRONG_PASSWORD>"
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    hosts:
+      - grafana.monitoring.local
+    path: /
+    pathType: Prefix
+  persistence:
+    enabled: true
+    storageClassName: standard  # Change to your storage class
+    size: 10Gi
+
+# ---
+# Alertmanager - on-prem SMTP and notification config
+# ---
+alertmanager:
+  enabled: true
+  stringConfig: |
+    global:
+      smtp_smarthost: '<SMTP_HOST:PORT>'
+      smtp_from: '<SMTP_FROM_EMAIL>'
+      smtp_auth_username: '<SMTP_USERNAME>'
+      smtp_auth_password: '<SMTP_PASSWORD>'
+      smtp_require_tls: true
+      resolve_timeout: 5m
+
+    route:
+      receiver: default-receiver
+      group_by: ['alertname', 'namespace', 'instance']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 1h
+      routes:
+        - matchers:
+            - alertname = CrashLoopBackOffDetected
+          receiver: crashloopback-email
+        - matchers:
+            - severity = critical
+          receiver: critical-email
+
+    receivers:
+      - name: default-receiver
+        email_configs:
+          - to: 'alerts@your-domain.com'
+            send_resolved: true
+
+      - name: crashloopback-email
+        email_configs:
+          - to: 'oncall@your-domain.com'
+            send_resolved: true
+
+      - name: critical-email
+        email_configs:
+          - to: 'oncall@your-domain.com'
+            send_resolved: true
+
+    inhibit_rules:
+      - source_matchers:
+          - 'severity = critical'
+        target_matchers:
+          - 'severity =~ warning|info'
+        equal: ['namespace', 'alertname']
+
+# ---
+# Prometheus - on-prem configuration (no EC2 discovery)
+# For on-prem, remove ec2_sd_configs and use static_configs or other service discovery
+# ---
+prometheus:
+  enabled: true
+  prometheusSpec:
+    retention: 15d
+    replicas: 1
+    image:
+      registry: quay.io
+      repository: prometheus/prometheus
+      tag: v3.3.1
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: standard  # Change to your storage class
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 50Gi
+    # On-prem: use static_configs or consul_sd_configs instead of ec2_sd_configs
+    additionalScrapeConfigs: []
+
+# ---
+# Node Exporter - enable for on-prem bare-metal/VM node monitoring
+# ---
+nodeExporter:
+  enabled: true
+
+prometheus-node-exporter:
+  prometheus:
+    monitor:
+      enabled: true
+
+# Disable EC2-specific components for on-prem
+thanosRuler:
+  enabled: false
