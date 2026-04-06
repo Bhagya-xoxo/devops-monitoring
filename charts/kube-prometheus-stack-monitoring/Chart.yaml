@@ -1,0 +1,31 @@
+apiVersion: v2
+name: kube-prometheus-stack-monitoring
+description: |
+  A reusable Helm chart wrapping kube-prometheus-stack (v82.14.1) for centralized
+  Kubernetes monitoring. Deploys Prometheus, Alertmanager, and Grafana with custom
+  alerting rules. Designed for use with Devtron CD or on-premise Helm deployments.
+  CRDs are managed separately and must be installed before this chart.
+
+type: application
+version: 1.0.0
+appVersion: "82.14.1"
+
+dependencies:
+  - name: kube-prometheus-stack
+    version: "82.14.1"
+    repository: "https://prometheus-community.github.io/helm-charts"
+    condition: kube-prometheus-stack.enabled
+
+keywords:
+  - prometheus
+  - monitoring
+  - alertmanager
+  - grafana
+  - kubernetes
+
+maintainers:
+  - name: DevOps Team
+    email: devops@xoxoday.com
+
+sources:
+  - https://github.com/prometheus-community/helm-charts
