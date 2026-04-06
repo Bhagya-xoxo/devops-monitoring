@@ -1,0 +1,119 @@
+# =============================================================================
+# values-devtron.yaml - Devtron Deployment Overrides
+# =============================================================================
+# Use this file when deploying via Devtron CD.
+# Override this file per environment in Devtron's chart values UI.
+# Sensitive values (passwords, API keys) should use Kubernetes Secrets
+# or Devtron's secret management.
+# =============================================================================
+
+# Override the release name to match your Devtron app name
+fullnameOverride: "my-app-prometheus"
+
+# CRDs must be installed separately - always keep disabled
+crds:
+  enabled: false
+
+# Default rules disabled - custom rules in additionalPrometheusRulesMap
+defaultRules:
+  create: false
+
+# ---
+# Grafana - enable ingress with your domain
+# ---
+grafana:
+  enabled: true
+  adminPassword: "<SET_VIA_DEVTRON_SECRET>"
+  ingress:
+    enabled: true
+    ingressClassName: nginx-int
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    hosts:
+      - grafana.your-domain.com
+    path: /
+    pathType: Prefix
+  persistence:
+    enabled: true
+    storageClassName: gp3
+    size: 5Gi
+
+# ---
+# Alertmanager - configure SMTP and webhook receivers
+# Replace placeholders with actual values or reference Kubernetes Secrets
+# ---
+alertmanager:
+  enabled: true
+  stringConfig: |
+    global:
+      smtp_smarthost: 'smtp.sendgrid.net:587'
+      smtp_from: 'alerts@your-domain.com'
+      smtp_auth_username: 'apikey'
+      smtp_auth_password: '<SENDGRID_API_KEY>'
+      smtp_require_tls: true
+      resolve_timeout: 5m
+
+    route:
+      receiver: teams-notifications
+      group_by: ['alertname', 'namespace', 'instance']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 1h
+      routes:
+        - matchers:
+            - alertname = CrashLoopBackOffDetected
+          receiver: crashloopback-multichannel
+        - matchers:
+            - severity = critical
+          receiver: critical-multichannel
+
+    receivers:
+      - name: crashloopback-multichannel
+        webhook_configs:
+          - url: 'http://teams-webhook.<NAMESPACE>:80/teams'
+            send_resolved: true
+
+      - name: teams-notifications
+        webhook_configs:
+          - url: 'http://teams-webhook.<NAMESPACE>:80/teams'
+            send_resolved: true
+
+      - name: critical-multichannel
+        webhook_configs:
+          - url: 'http://teams-webhook.<NAMESPACE>:80/teams'
+            send_resolved: true
+
+    inhibit_rules:
+      - source_matchers:
+          - 'severity = critical'
+        target_matchers:
+          - 'severity =~ warning|info'
+        equal: ['namespace', 'alertname']
+
+# ---
+# Prometheus - configure scrape targets per environment
+# ---
+prometheus:
+  enabled: true
+  prometheusSpec:
+    retention: 10d
+    replicas: 1
+    image:
+      registry: quay.io
+      repository: prometheus/prometheus
+      tag: v3.3.1
+    # Override additionalScrapeConfigs per environment
+    additionalScrapeConfigs:
+      - job_name: EC2_Monitor
+        scrape_interval: 15s
+        ec2_sd_configs:
+          - region: <AWS_REGION>
+            port: 9100
+        relabel_configs:
+          - source_labels: [__meta_ec2_tag_scrap]
+            regex: true
+            action: keep
+          - source_labels: [__meta_ec2_tag_Name]
+            target_label: instance
+          - source_labels: [__meta_ec2_private_ip]
+            target_label: privateip
