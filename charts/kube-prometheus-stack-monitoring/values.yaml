@@ -1,0 +1,578 @@
+# =============================================================================
+# kube-prometheus-stack-monitoring - Reusable Helm Chart Values
+# Based on kube-prometheus-stack v82.14.1
+# =============================================================================
+# This file contains sanitized, reusable default values.
+# Environment-specific secrets (SMTP passwords, webhook URLs, etc.)
+# must be provided via -f overrides or Kubernetes Secrets.
+#
+# CRD NOTICE: crds.enabled is set to false intentionally.
+# CRDs must be installed separately before deploying this chart.
+# =============================================================================
+
+# -- Enable/disable the kube-prometheus-stack dependency
+kube-prometheus-stack:
+  enabled: true
+
+# =============================================================================
+# GLOBAL OVERRIDES
+# =============================================================================
+nameOverride: ""
+namespaceOverride: ""
+kubeTargetVersionOverride: ""
+kubeVersionOverride: ""
+
+# Override the full name - set per environment
+# e.g., "empuls-us-oregon-prom" for empuls prod-us
+fullnameOverride: ""
+
+commonLabels: {}
+
+# =============================================================================
+# CRDS - Disabled intentionally. Install CRDs separately.
+# =============================================================================
+crds:
+  enabled: false
+
+# =============================================================================
+# DEFAULT PROMETHEUS RULES
+# The built-in alerting rules from kube-prometheus-stack are disabled here.
+# Custom rules are defined in additionalPrometheusRulesMap below.
+# =============================================================================
+defaultRules:
+  create: false
+  rules:
+    alertmanager: true
+    etcd: true
+    configReloaders: true
+    general: true
+    k8sContainerCpuUsageSecondsTotal: true
+    k8sContainerMemoryCache: true
+    k8sContainerMemoryRss: true
+    k8sContainerMemorySwap: true
+    k8sContainerResource: true
+    k8sContainerMemoryWorkingSetBytes: true
+    k8sPodOwner: true
+    kubeApiserverAvailability: true
+    kubeApiserverBurnrate: true
+    kubeApiserverHistogram: true
+    kubeApiserverSlos: true
+    kubeControllerManager: true
+    kubelet: true
+    kubeProxy: true
+    kubePrometheusGeneral: true
+    kubePrometheusNodeRecording: true
+    kubernetesApps: true
+    kubernetesResources: true
+    kubernetesStorage: true
+    kubernetesSystem: true
+    kubeSchedulerAlerting: true
+    kubeSchedulerRecording: true
+    kubeStateMetrics: true
+    network: true
+    node: true
+    nodeExporterAlerting: true
+    nodeExporterRecording: true
+    prometheus: true
+    prometheusOperator: true
+    windows: true
+
+# =============================================================================
+# CUSTOM PROMETHEUS ALERT RULES
+# These PrometheusRule resources are created by the chart.
+# Namespace selector can be adjusted per environment.
+# =============================================================================
+additionalPrometheusRulesMap:
+  overrides:
+    groups:
+
+      # ---------------------------------------------------------------------------
+      # Container CPU Rules
+      # Monitors CPU usage of containers against their resource limits.
+      # namespace: set to target namespace (e.g. "prodenv")
+      # ---------------------------------------------------------------------------
+      - name: HighContainerCPU.rules
+        rules:
+          - alert: ContainerCpuUsage
+            expr: |
+              (((sum(rate(container_cpu_usage_seconds_total{namespace="prodenv",container!="",container!="POD"}[5m])) by (pod))
+              / clamp_min(sum(kube_pod_container_resource_limits{namespace="prodenv",container!="",container!="POD",resource="cpu"}) by (pod), 0.001)) * 100) > 80
+            for: 15m
+            labels:
+              severity: critical
+            annotations:
+              summary: Container CPU usage (instance {{ $labels.instance }})
+              description: "Container CPU usage is above 80%\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+
+          - alert: HighContainerCpuUsage
+            expr: |
+              (((sum(rate(container_cpu_usage_seconds_total{namespace="prodenv",container!="",container!="POD"}[5m])) by (pod))
+              / clamp_min(sum(kube_pod_container_resource_limits{namespace="prodenv",container!="",container!="POD",resource="cpu"}) by (pod), 0.001)) * 100) > 90
+            for: 15m
+            labels:
+              severity: critical
+            annotations:
+              summary: Container CPU usage (instance {{ $labels.instance }})
+              description: "Container CPU usage is above 90%\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}."
+
+      # ---------------------------------------------------------------------------
+      # EC2 Host Rules
+      # Monitors CPU, memory, and disk on EC2 nodes scraped via ec2_sd_configs.
+      # jobs: EC2_Monitor, EC2_Monitor_couch, ingress-prometheus
+      # ---------------------------------------------------------------------------
+      - name: EC2Host.rules
+        rules:
+          - alert: EC2HostCPUUsage
+            expr: |
+              100 - (
+              avg by(instance, privateip)(
+              rate(node_cpu_seconds_total{mode="idle", job=~"EC2_Monitor|EC2_Monitor_couch|ingress-prometheus"}[2m])
+              ) * 100
+              ) > 85
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "{{$labels.instance}} {{$labels.job}}: High CPU usage detected"
+              description: '{{$labels.instance}} {{$labels.job}}: CPU usage is above 85% (current value is: {{ $value | printf "%.2f" }})'
+
+          - alert: EC2HostDown
+            expr: |
+              up{job=~"EC2_Monitor|EC2_Monitor_couch"} == 0
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "{{$labels.instance}} {{$labels.job}}: Instance is down"
+              description: "{{$labels.instance}} {{$labels.job}}: Instance is down"
+
+          - alert: EC2VMHostMemoryUsage
+            expr: |
+              100 - (
+              (node_memory_MemAvailable_bytes{job=~"EC2_Monitor|EC2_Monitor_couch|ingress-prometheus"} * 100)
+              / node_memory_MemTotal_bytes{job=~"EC2_Monitor|EC2_Monitor_couch|ingress-prometheus"}
+              ) > 90
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "{{$labels.instance}} {{$labels.job}}: High Memory Usage Detected"
+              description: '{{$labels.instance}} {{$labels.job}}: Memory usage is above 90% (current value: {{ $value | printf "%.2f" }}%)'
+
+          - alert: EC2HostOutOfDiskSpace
+            expr: |
+              (100 - (
+              node_filesystem_avail_bytes{job=~"EC2_Monitor|EC2_Monitor_couch|ingress-prometheus", mountpoint="/", fstype!="rootfs"} * 100
+              /
+              node_filesystem_size_bytes{job=~"EC2_Monitor|EC2_Monitor_couch|ingress-prometheus", mountpoint="/", fstype!="rootfs"}
+              )) > 85
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              description: Root disk is almost full (< 10% left) VALUE = {{ $value | printf "%.2f" }}% full
+              summary: Host out of disk space (instance {{ $labels.instance }} {{$labels.job}})
+
+      # ---------------------------------------------------------------------------
+      # CPU Throttling Rules
+      # Detects containers whose CPU is being throttled >88% of scheduling periods.
+      # High throttling indicates the CPU limit is too low.
+      # ---------------------------------------------------------------------------
+      - name: CPUThrottlingHigh.rules
+        rules:
+          - alert: CPUThrottlingHigh
+            expr: |
+              sum(increase(container_cpu_cfs_throttled_periods_total{namespace="prodenv",container!=""}[5m])) by (container, pod, namespace)
+              / sum(increase(container_cpu_cfs_periods_total{}[5m])) by (container, pod, namespace)
+              > 0.88
+            for: 15m
+            labels:
+              severity: critical
+            annotations:
+              summary: Processes experience elevated CPU throttling.
+              description: '{{ $value | humanizePercentage }} throttling of CPU in namespace {{ $labels.namespace }} for container {{ $labels.container }} in pod {{ $labels.pod }}.'
+              runbook_url: https://github.com/prometheus-community/helm-charts/runbooks/CPUThrottlingHigh
+
+      # ---------------------------------------------------------------------------
+      # Container Memory Rules
+      # Monitors working set memory usage against limits.
+      # Warning at >85%, Critical at >90%.
+      # ---------------------------------------------------------------------------
+      - name: ContainerMemoryUsage.rules
+        rules:
+          - alert: ContainerMemoryUsageWarning
+            expr: |
+              (
+              container_memory_working_set_bytes{namespace="prodenv",container!="",container!="POD",image!=""}
+              /
+              on(namespace,pod,container)
+              kube_pod_container_resource_limits{namespace="prodenv",resource="memory",container!=""}
+              ) * 100 > 85
+              and on(namespace,pod,container)
+              kube_pod_container_resource_limits{namespace="prodenv",resource="memory"} > 0
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Container memory usage >85% ({{ $labels.pod }} / {{ $labels.container }})"
+              description: |
+                Container memory usage is above 85%.
+                Pod: {{ $labels.pod }}
+                Container: {{ $labels.container }}
+                Namespace: {{ $labels.namespace }}
+                Current Value: {{ printf "%.2f" $value }}%
+
+          - alert: HighContainerMemoryUsage
+            expr: |
+              (
+              container_memory_working_set_bytes{namespace="prodenv",container!="",container!="POD",image!=""}
+              /
+              on(namespace,pod,container)
+              kube_pod_container_resource_limits{namespace="prodenv",resource="memory",container!=""}
+              ) * 100 > 90
+              and on(namespace,pod,container)
+              kube_pod_container_resource_limits{namespace="prodenv",resource="memory"} > 0
+            for: 10m
+            labels:
+              severity: critical
+            annotations:
+              summary: "HIGH container memory usage ({{ $labels.pod }} / {{ $labels.container }})"
+              description: |
+                Container is using more than 90% of its configured memory limit.
+                Pod: {{ $labels.pod }}
+                Container: {{ $labels.container }}
+                Namespace: {{ $labels.namespace }}
+                Usage: {{ printf "%.2f" $value }}%
+                This container is close to OOMKilled.
+
+      # ---------------------------------------------------------------------------
+      # CrashLoopBackOff Rules
+      # Triggers when any pod enters CrashLoopBackOff state.
+      # Fast alert (1m) to catch repeated container crashes early.
+      # ---------------------------------------------------------------------------
+      - name: CrashLoopBackOff.rules
+        rules:
+          - alert: CrashLoopBackOffDetected
+            expr: |
+              kube_pod_container_status_waiting_reason{namespace="prodenv",reason="CrashLoopBackOff"} > 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Pod {{ $labels.pod }} is in CrashLoopBackOff"
+              description: "Container in pod {{ $labels.pod }} (namespace: {{ $labels.namespace }}) is in CrashLoopBackOff"
+
+# =============================================================================
+# GLOBAL SETTINGS
+# =============================================================================
+global:
+  rbac:
+    create: true
+    createAggregateClusterRoles: false
+    pspEnabled: false
+    pspAnnotations: {}
+
+# =============================================================================
+# ALERTMANAGER
+# Handles alert routing: critical alerts go to Teams + email.
+# CrashLoopBackOff alerts have a dedicated receiver.
+# SMTP and webhook credentials must be overridden per environment.
+# =============================================================================
+alertmanager:
+  enabled: true
+
+  # Primary alertmanager configuration as a string.
+  # Uses stringConfig so the full alertmanager config can be provided inline.
+  stringConfig: |
+    global:
+      smtp_smarthost: '<SMTP_HOST:PORT>'
+      smtp_from: '<SMTP_FROM_EMAIL>'
+      smtp_auth_username: '<SMTP_USERNAME>'
+      smtp_auth_password: '<SMTP_PASSWORD>'
+      smtp_require_tls: true
+      resolve_timeout: 5m
+
+    route:
+      receiver: teams-notifications
+      group_by: ['alertname', 'namespace', 'instance']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 1h
+      routes:
+        - matchers:
+            - alertname = CrashLoopBackOffDetected
+          receiver: crashloopback-multichannel
+        - matchers:
+            - severity = critical
+          receiver: critical-multichannel
+
+    receivers:
+      - name: crashloopback-multichannel
+        webhook_configs:
+          - url: '<TEAMS_WEBHOOK_URL>'
+            send_resolved: true
+
+      - name: teams-notifications
+        webhook_configs:
+          - url: '<TEAMS_WEBHOOK_URL>'
+            send_resolved: true
+
+      - name: critical-multichannel
+        webhook_configs:
+          - url: '<TEAMS_WEBHOOK_URL>'
+            send_resolved: true
+
+    inhibit_rules:
+      - source_matchers:
+          - 'severity = critical'
+        target_matchers:
+          - 'severity =~ warning|info'
+        equal: ['namespace', 'alertname']
+      - source_matchers:
+          - 'severity = warning'
+        target_matchers:
+          - 'severity = info'
+        equal: ['namespace', 'alertname']
+      - source_matchers:
+          - 'alertname = InfoInhibitor'
+        target_matchers:
+          - 'severity = info'
+        equal: ['namespace']
+      - target_matchers:
+          - 'alertname = InfoInhibitor'
+
+  tplConfig: true
+  apiVersion: v2
+  forceDeployDashboards: false
+
+  alertmanagerSpec:
+    replicas: 1
+    storage: {}
+    logLevel: info
+    resources: {}
+
+# =============================================================================
+# GRAFANA
+# Deployed with nginx ingress, persistent storage (gp3), and auto-provisioned
+# dashboards from ConfigMaps labeled grafana_dashboard=1.
+# Admin password must be overridden per environment.
+# =============================================================================
+grafana:
+  enabled: true
+  namespaceOverride: ""
+  defaultDashboardsEnabled: true
+  defaultDashboardsTimezone: utc
+  defaultDashboardsEditable: true
+  defaultDashboardsInterval: 1m
+
+  # Override per environment
+  adminUser: admin
+  adminPassword: "<GRAFANA_ADMIN_PASSWORD>"
+
+  rbac:
+    pspEnabled: false
+
+  ingress:
+    enabled: false
+    ingressClassName: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    labels: {}
+    hosts: []
+    path: /
+    pathType: Prefix
+    tls: []
+
+  persistence:
+    enabled: true
+    type: sts
+    storageClassName: gp3
+    accessModes:
+      - ReadWriteOnce
+    size: 5Gi
+
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+    datasources:
+      enabled: true
+      defaultDatasourceEnabled: true
+      isDefaultDatasource: true
+      uid: prometheus
+      url: http://{{ printf "%s-prometheus" .Release.Name }}:9090/
+      createPrometheusReplicasDatasources: false
+      label: grafana_datasource
+      labelValue: "1"
+      alertmanager:
+        enabled: true
+        name: Alertmanager
+        uid: alertmanager
+        handleGrafanaManagedAlerts: false
+        implementation: prometheus
+
+  serviceMonitor:
+    enabled: true
+    path: "/metrics"
+    scrapeTimeout: 30s
+
+# =============================================================================
+# KUBERNETES SERVICE MONITORS
+# Controls which Kubernetes components are scraped.
+# =============================================================================
+kubernetesServiceMonitors:
+  enabled: true
+
+kubeApiServer:
+  enabled: true
+
+kubelet:
+  enabled: true
+  serviceMonitor:
+    metricRelabelings:
+      - action: drop
+        regex: 'container_memory_(mapped_file|swap)'
+        sourceLabels: [__name__]
+      - action: drop
+        regex: 'container_(network_tcp_usage_total|network_udp_usage_total|tasks_state|cpu_load_average_10s)'
+        sourceLabels: [__name__]
+      - action: drop
+        regex: 'container_blkio_device_usage_total'
+        sourceLabels: [__name__]
+      - action: drop
+        regex: 'container_file_descriptors'
+        sourceLabels: [__name__]
+
+kubeControllerManager:
+  enabled: false
+
+coreDns:
+  enabled: true
+
+kubeDns:
+  enabled: false
+
+kubeEtcd:
+  enabled: false
+
+kubeScheduler:
+  enabled: false
+
+kubeProxy:
+  enabled: false
+
+kubeStateMetrics:
+  enabled: true
+
+kube-state-metrics:
+  selfMonitor:
+    enabled: false
+  prometheus:
+    monitor:
+      enabled: true
+      relabelings:
+        - action: replace
+          regex: (.*)
+          replacement: $1
+          sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: kubernetes_node
+
+nodeExporter:
+  enabled: false
+
+prometheus-node-exporter:
+  prometheus:
+    monitor:
+      enabled: false
+
+# =============================================================================
+# PROMETHEUS OPERATOR
+# Manages Prometheus, Alertmanager, and related CRDs.
+# =============================================================================
+prometheusOperator:
+  enabled: true
+  tls:
+    enabled: true
+    tlsMinVersion: VersionTLS13
+  admissionWebhooks:
+    enabled: true
+    timeoutSeconds: 10
+    failurePolicy: ""
+
+# =============================================================================
+# PROMETHEUS
+# Main Prometheus instance configuration.
+# Scrapes EC2 nodes via ec2_sd_configs (AWS credentials required for EC2 discovery).
+# Retention: 10 days.
+# =============================================================================
+prometheus:
+  enabled: true
+
+  prometheusSpec:
+    retention: 10d
+    walCompression: true
+    replicas: 1
+    logLevel: info
+    podAntiAffinity: "soft"
+    podAntiAffinityTopologyKey: kubernetes.io/hostname
+
+    # Image override
+    image:
+      registry: quay.io
+      repository: prometheus/prometheus
+      tag: v3.3.1
+
+    # Selectors (empty = scrape all namespaces)
+    serviceMonitorSelectorNilUsesHelmValues: true
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+    podMonitorSelectorNilUsesHelmValues: true
+    podMonitorSelector: {}
+    podMonitorNamespaceSelector: {}
+    ruleSelector: {}
+
+    # EC2 node scrape jobs (AWS region and tags must match your environment)
+    additionalScrapeConfigs:
+      - job_name: EC2_Monitor
+        scrape_interval: 15s
+        ec2_sd_configs:
+          - region: us-west-2
+            port: 9100
+        relabel_configs:
+          - source_labels: [__meta_ec2_tag_scrap]
+            regex: true
+            action: keep
+          - source_labels: [__meta_ec2_tag_Name]
+            target_label: instance
+          - source_labels: [__meta_ec2_private_ip]
+            target_label: privateip
+
+      - job_name: EC2_Monitor_couch
+        scrape_interval: 15s
+        ec2_sd_configs:
+          - region: us-west-2
+            port: 9500
+        relabel_configs:
+          - source_labels: [__meta_ec2_tag_trace]
+            regex: true
+            action: keep
+          - source_labels: [__meta_ec2_tag_Name]
+            target_label: instance
+          - source_labels: [__meta_ec2_private_ip]
+            target_label: privateip
+
+    storageSpec: {}
+    resources: {}
+    volumes: []
+    volumeMounts: []
+
+# =============================================================================
+# THANOS RULER - Disabled by default
+# =============================================================================
+thanosRuler:
+  enabled: false
+
+# Clean up Prometheus operator object names
+cleanPrometheusOperatorObjectNames: false
